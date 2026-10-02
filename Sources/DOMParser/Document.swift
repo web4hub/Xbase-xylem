@@ -95,6 +95,55 @@ public struct Document: ~Copyable, Sendable {
     return XML.Location(line: Int(location.line), offset: Int(location.offset))
   }
 
+  // MARK: - Node content
+  //
+  // These mirror the corresponding ``NodeView`` and ``AttributeView``
+  // properties but read the arenas directly.  Prefer them in hot traversal
+  // loops: binding a `~Copyable & ~Escapable` view to a local currently costs
+  // a heap allocation per view.
+
+  /// Returns the qualified name of `node` for element, processing
+  /// instruction, DOCTYPE, and attribute nodes; `nil` for all other kinds.
+  @_lifetime(borrow self)
+  public func name(of node: Reference) -> XML.QualifiedNameView? {
+    let name: (spelling: Slice, colon: Int32)
+    if let attribute = attribute(of: node) {
+      name = (attribute.name.spelling, attribute.colon)
+    } else {
+      let node = self.node(node)
+      name = (node.name.spelling, node.colon)
+    }
+    guard name.spelling.present else { return nil }
+    let bytes = storage.span.extracting(name.spelling.range)
+    return XML.QualifiedNameView(unvalidated: bytes,
+                                 colon: name.colon >= 0 ? Int(name.colon) : nil)
+  }
+
+  /// Returns the content of `node`: text for text, comment, and CDATA nodes;
+  /// data for processing instructions; the public identifier for DOCTYPE
+  /// nodes; the value for attribute nodes; `nil` otherwise.
+  @_lifetime(borrow self)
+  public func value(of node: Reference) -> Span<XML.Byte>? {
+    let value = attribute(of: node)?.value ?? self.node(node).value
+    guard value.present else { return nil }
+    return storage.span.extracting(value.range)
+  }
+
+  /// Returns the namespace URI of an element or attribute node, or `nil` if
+  /// it is unqualified or of any other kind.
+  @_lifetime(borrow self)
+  public func namespace(of node: Reference) -> Span<XML.Byte>? {
+    let namespace = attribute(of: node)?.namespace ?? self.node(node).namespace
+    guard namespace.present else { return nil }
+    return storage.span.extracting(namespace.range)
+  }
+
+  @inline(__always)
+  private func attribute(of node: Reference) -> Attribute? {
+    guard let (element, position) = node.attribute else { return nil }
+    return attributes[Int(nodes[element].attributes.base) + position]
+  }
+
   // MARK: - Tree navigation (returns stable Reference handles)
 
   /// Returns the parent of `node`, or `nil` for the document root.
